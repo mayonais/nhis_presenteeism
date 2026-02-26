@@ -1,0 +1,89 @@
+library(dplyr)
+library(broom)
+library(haven)
+library(MASS)
+library(ggplot2)
+library(hexbin)
+
+
+data <- read_dta("nhis_00005.dta") %>%
+  rename_with(tolower) #converts to lowercase
+
+#create dataset for modeling
+data_model <- data %>%
+  mutate(
+    is_employed = case_when(
+      empstat >= 100 & empstat <= 122 ~ 1,    #employed
+      empstat >= 200 & empstat < 300 ~ 0,     #unemployed
+      empstat == 220 ~ 0,                     #not in labor force
+      empstat %in% c(900, 997, 998, 999) ~ NA_real_,  #unknown
+      TRUE ~ NA_real_                     
+    ),
+    
+    #outcome (valid 0–90; drop 96–99)
+    wrk_sick_clean = ifelse(wrksickday <= 90, wrksickday, NA_real_),
+    
+    #skip meds (1=no, 2=yes)
+    skip_meds = case_when(
+      yskipmedyr == 2 ~ 1,
+      yskipmedyr == 1 ~ 0,
+      TRUE ~ NA_real_
+    ),
+    
+    #headache severity (keep 2–4 only)
+    headache_severity = ifelse(painhead3m %in% 2:4,
+                               painhead3m,
+                               NA_real_),
+    
+    #how often pain limits activities (2–4 valid)
+    pain_limit = ifelse(painlimact %in% 1:4,
+                        painlimact,
+                        NA_real_),
+    
+    #sex (drop 7/8/9)
+    sex_factor = factor(ifelse(sex %in% c(1,2), sex, NA))
+  ) %>%
+  filter(is_employed == 1) #restrict to employed respondents
+
+#mean centers for headache severity and pain limitation
+#subtracts the sample mean from each value
+data_model <- data_model %>%
+  mutate(
+    headache_c = headache_severity - mean(headache_severity, na.rm = TRUE),
+    pain_c = pain_limit - mean(pain_limit, na.rm = TRUE)
+  )
+
+dim(data_model)
+
+#linear regression - outcome: number of sick days
+lm_fit <- lm(wrk_sick_clean ~ skip_meds + headache_c + pain_c + age + sex_factor,
+                  data = data_model, na.action = na.omit)
+#logistic regression
+logit_fit <- glm(skip_meds ~ wrk_sick_clean + headache_c + pain_c + age + sex_factor,
+                 data = data_model,
+                 family = binomial)
+#non binomial
+nb_fit <- glm.nb(wrk_sick_clean ~ skip_meds + headache_c + pain_c + age + sex_factor,
+                 data = data_model)
+#compares model quality
+AIC(lm_fit, logit_fit, nb_fit)
+
+tidy(nb_fit)
+exp(coef(nb_fit))
+
+#mean squared error
+pred_lm <- predict(lm_fit, newdata = data_model)
+pred_lg <- predict(logit_fit, newdata = data_model)
+pred_nb <- predict(nb_fit, newdata = data_model, type = "response")
+mse_lm <- mean((data_model$wrk_sick_clean - pred_lm)^2, na.rm = TRUE)
+mse_lg <- mean((data_model$wrk_sick_clean - pred_lg)^2, na.rm = TRUE)
+mse_nb <- mean((data_model$wrk_sick_clean - pred_nb)^2, na.rm = TRUE)
+c(MSE_LM = mse_lm, MSE_LG = mse_lg, MSE_NB = mse_nb)
+
+ggplot(data_model, aes(x = factor(skip_meds), y = wrk_sick_clean)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.1, alpha = 0.3) +
+  scale_y_log10() +   #log scale spreads out lower counts
+  labs(x = "Skipped Medications (0 = No, 1 = Yes)",
+       y = "Missed Work Days (log scale)",
+       title = "Medication Nonadherence on Sick Days")

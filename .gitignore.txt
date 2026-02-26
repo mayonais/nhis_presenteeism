@@ -1,0 +1,6 @@
+nhis_00006.dat
+.Rhistory
+.RData
+.Rproj.user/
+.RDataTmp*
+
